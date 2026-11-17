@@ -1,0 +1,10 @@
+// Web statis (bisa dipublish di GitHub Pages). Python berjalan di browser lewat Pyodide.
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: "export",
+  basePath: process.env.NEXT_PUBLIC_BASE_PATH || "",
+  trailingSlash: true,
+  images: { unoptimized: true },
+};
+
+export default nextConfig;
