@@ -10,7 +10,7 @@ import { alamatLokal, bukaPenerima, linkHP } from "./hp";
 import { analisis, pantauMesin, resetPenstabil, siapkanMesin } from "./mesin";
 import { tunggu } from "./util";
 
-const SKALA = { lebar: [0, 2], tinggi: [0, 1], tekstur: [0, 0.15] };
+const SKALA = { lebar: [0, 2], tinggi: [0, 1], tekstur: [0, 0.15], dagu: [0, 1] };
 const STATUS_AWAL = { kelas: "", teks: "Kamera belum aktif", sub: "Tekan “Mulai kamera”, lalu hadap ke kamera" };
 
 // HP/tablet (layar sentuh): "Ganti kamera" = depan/belakang. Laptop: webcam lain atau kamera HP.
@@ -155,6 +155,10 @@ export default function Kamera({ info, onLihatTahap, mintaHP }) {
       ctx.strokeStyle = "#FFE14D"; ctx.beginPath(); ctx.moveTo(X(kx1), Y(ky)); ctx.lineTo(X(kx2), Y(ky)); ctx.stroke();
       const [tx, ty1, ty2] = h.garis_tinggi;
       ctx.strokeStyle = "#E15BFF"; ctx.beginPath(); ctx.moveTo(X(tx), Y(ty1)); ctx.lineTo(X(tx), Y(ty2)); ctx.stroke();
+      if (h.kotak_dagu) {                                         // area dagu (kulit atau chin bar?)
+        const [d1, e1, d2, e2] = h.kotak_dagu;
+        ctx.strokeStyle = "#4DD8FF"; ctx.lineWidth = 2 * dpr; ctx.strokeRect(X(d1), Y(e1), X(d2) - X(d1), Y(e2) - Y(e1));
+      }
       ctx.globalAlpha = 1;
     }
     if (s.jalan) requestAnimationFrame(gambar);
@@ -336,7 +340,8 @@ export default function Kamera({ info, onLihatTahap, mintaHP }) {
   const cermin = aktif && sumber === "lokal" && hadap === "user" ? "cermin" : "";
   const menyala = aktif || sumber === "hp";
   const a = info.ambang;
-  const jumlahLolos = fitur ? Object.values(fitur.ok).filter(Boolean).length : null;
+  // syarat 3 = tekstur mulus ATAU dagu tertutup chin bar (helm full face)
+  const jumlahLolos = fitur ? [fitur.ok.lebar, fitur.ok.tinggi, fitur.ok.penutup ?? fitur.ok.tekstur].filter(Boolean).length : null;
   const memuatMesin = mesin.tahap === "memuat";
   return (
     <div className="tata">
@@ -481,16 +486,22 @@ export default function Kamera({ info, onLihatTahap, mintaHP }) {
           <Meter no={3} nama="Tekstur penutup kepala" ket="Helm mulus, kain berlipat" nilai={fitur?.tekstur}
             ambang={a.tekstur} skala={SKALA.tekstur} lolos={fitur?.ok.tekstur} desimal={3} tandaAmbang="<" />
         </motion.div>
+        <motion.div variants={NAIK}>
+          <Meter no="3b" nama="Kulit di area dagu" ket="Pengganti syarat 3: dagu tertutup chin bar"
+            nilai={fitur?.dagu} ambang={a.dagu ?? 0.15} skala={SKALA.dagu} lolos={fitur?.ok.dagu} tandaAmbang="<"
+            redup={fitur && fitur.ok.tekstur} />
+        </motion.div>
         <motion.div variants={NAIK} className="kartu-ide">
           <p className="ide-judul">Cara kerja</p>
           <p className="ide-teks">
             Helm membuat kepala <b>lebih lebar</b>, <b>lebih tinggi</b>, dan <b>lebih mulus</b> daripada wajah.
-            Ketiganya terpenuhi berarti pakai helm.
+            Helm full face yang banyak ventilasi boleh bertekstur, asalkan <b>dagunya tertutup</b> chin bar.
           </p>
           <p className="ide-legenda">
             <span><i className="titik hijau" />wajah</span>
             <span><i className="titik kuning" />lebar kepala</span>
             <span><i className="titik ungu" />tinggi</span>
+            <span><i className="titik biru" />dagu</span>
           </p>
         </motion.div>
       </motion.aside>

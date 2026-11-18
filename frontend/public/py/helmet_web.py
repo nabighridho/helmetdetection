@@ -15,15 +15,16 @@ PENJELASAN = [
     "Viola-Jones menemukan wajah (hijau); kotak biru = area pencarian kepala.",
     "Segmentasi kepala berbasis region dengan GrabCut (Bab 10).",
     "Opening, closing, dan komponen terhubung terbesar (Bab 9).",
-    "Pengukuran: kuning = lebar kepala, ungu = tinggi di atas wajah.",
-    "Keputusan dari tiga fitur: lebar, tinggi, dan tekstur.",
+    "Pengukuran: kuning = lebar kepala, ungu = tinggi di atas wajah, biru muda = area dagu (Bab 6, warna kulit YCrCb).",
+    "Keputusan: lebar, tinggi, dan tekstur mulus (atau dagu tertutup chin bar untuk helm full face).",
 ]
 
 
 def info():
     return json.dumps({
         "nama": "Helmet Detection",
-        "ambang": {"lebar": hg.MIN_LEBAR, "tinggi": hg.MIN_TINGGI, "tekstur": hg.MAKS_TEKSTUR},
+        "ambang": {"lebar": hg.MIN_LEBAR, "tinggi": hg.MIN_TINGGI, "tekstur": hg.MAKS_TEKSTUR,
+                   "dagu": hg.MAKS_KULIT_DAGU, "tinggi_dagu": hg.MIN_TINGGI_DAGU},
         "detik_tertutup": hg.DETIK_TERTUTUP,
         "detik_diam": hg.DETIK_DIAM,
         "zona_ragu": hg.ZONA_RAGU,
@@ -57,6 +58,8 @@ def _ringkas(h):
         "wajah_px": [fx, fy, fw, fh],
         "garis_lebar": [float(u["kiri"]) / W, float(u["baris"]) / H, float(u["kanan"]) / W],
         "garis_tinggi": [(fx + fw / 2) / W, float(u["puncak"]) / H, fy / H],
+        "kotak_dagu": ([u["kotak_dagu"][0] / W, u["kotak_dagu"][1] / H, u["kotak_dagu"][2] / W, u["kotak_dagu"][3] / H]
+                       if u.get("kotak_dagu") else None),
     }
 
 

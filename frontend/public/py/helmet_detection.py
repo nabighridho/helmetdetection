@@ -11,6 +11,8 @@ import numpy as np
 MIN_LEBAR = 1.20       # lebar kepala / lebar wajah  (tanpa helm 0.85-0.98, helm 1.41-1.64)
 MIN_TINGGI = 0.40      # tinggi kepala di atas wajah / tinggi wajah (tanpa helm 0.14-0.31, helm 0.49-0.78)
 MAKS_TEKSTUR = 0.06    # kepadatan tepi penutup kepala (helm mulus 0.01-0.04, kerudung berlipat ~0.09)
+MAKS_KULIT_DAGU = 0.15 # porsi warna kulit di area dagu (helm full face 0.00-0.01, kerudung/rambut 0.41-1.00)
+MIN_TINGGI_DAGU = 0.45 # jalur "dagu tertutup" hanya berlaku jika penutup kepala cukup tinggi (masker + kerudung ~0.40)
 MIN_YAKIN = 0.5        # keyakinan minimal deteksi wajah
 MAKS_LEBAR_WAJAH = 0.5 # kotak wajah lebih lebar dari 50% gambar dianggap salah deteksi
 DETIK_TERTUTUP = 1.5   # wajah tidak terlihat selama ini -> periksa apakah tertutup kaca helm
@@ -23,7 +25,7 @@ ZONA_RAGU = 0.25       # margin < 0.25 dari ambang -> "kurang yakin"
 HISTERESIS = 0.15      # label baru berganti bila melewati ambang lebih dari margin ini
 DETIK_GANTI = 0.6      # label baru harus bertahan selama ini sebelum ditampilkan
 DETIK_INGAT_HELM = 5.0 # wajah hilang < 5 detik setelah terdeteksi helm -> kaca helm baru ditutup
-SKALA_MARGIN = dict(lebar=0.20, tinggi=0.20, tekstur=0.03)   # 1 margin = jarak sebesar ini dari ambang
+SKALA_MARGIN = dict(lebar=0.20, tinggi=0.20, tekstur=0.03, dagu=0.10)   # 1 margin = jarak sebesar ini dari ambang
 
 # Pemeriksa helm saat wajah tidak terlihat (transformasi Hough, Chapter 10)
 MAKS_TEPI_TANPA_WAJAH = 0.05  # kepadatan tepi di dalam lingkaran helm (helm kaca gelap 0.015-0.041)
@@ -137,7 +139,23 @@ def segmentasi_kepala(img, wajah):
     return (x0, y0, x1, y1), mask, bersih
 
 
-def fitur(wajah, kotak, kepala, gray):
+def kulit_dagu(img, wajah):
+    """Pendukung (Chapter 6, ruang warna YCrCb): seberapa banyak area dagu berwarna kulit.
+    Warna kulit acuan diambil dari pipi/hidung orang itu sendiri, jadi tidak bergantung warna kulit.
+    Helm full face menutup dagu dengan chin bar -> hampir tidak ada kulit di area dagu."""
+    fx, fy, fw, fh = wajah
+    H = img.shape[0]
+    ycc = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb).astype(np.float32)
+    acuan = ycc[fy + int(0.45 * fh):fy + int(0.62 * fh), fx + int(0.3 * fw):fx + int(0.7 * fw), 1:].reshape(-1, 2)
+    y1, y2 = fy + int(0.85 * fh), min(H, fy + int(1.05 * fh))
+    dagu = ycc[y1:y2, fx + int(0.3 * fw):fx + int(0.7 * fw), 1:].reshape(-1, 2)
+    if len(acuan) == 0 or len(dagu) == 0:
+        return 1.0, (fx, fy, fw, fh)
+    jarak = np.linalg.norm(dagu - np.median(acuan, axis=0), axis=1)
+    return float(np.mean(jarak < 8)), (fx + int(0.3 * fw), y1, fx + int(0.7 * fw), y2)
+
+
+def fitur(wajah, kotak, kepala, gray, img=None):
     fx, fy, fw, fh = wajah
     x0, y0 = kotak[:2]
     fyr = fy - y0                                       # posisi atas wajah di dalam area
@@ -160,16 +178,23 @@ def fitur(wajah, kotak, kepala, gray):
     t_s = cv2.resize(tutup, None, fx=s, fy=s, interpolation=cv2.INTER_NEAREST)
     tepi = cv2.Canny(cv2.GaussianBlur(g_s, (3, 3), 0), 40, 100)
     tekstur = np.count_nonzero(tepi[t_s > 0]) / max(np.count_nonzero(t_s), 1)
-    f = dict(lebar=lebar_kepala / fw, tinggi=(fyr - puncak) / fh, tekstur=tekstur)
-    ukur = dict(puncak=puncak + y0, baris=baris_terlebar + y0,
+    dagu, kotak_dagu = kulit_dagu(img, wajah) if img is not None else (1.0, None)
+    f = dict(lebar=lebar_kepala / fw, tinggi=(fyr - puncak) / fh, tekstur=tekstur, dagu=dagu)
+    ukur = dict(puncak=puncak + y0, baris=baris_terlebar + y0, kotak_dagu=kotak_dagu,
                 kiri=x0 + int(np.where(kepala[baris_terlebar])[0].min()) if lebar_kepala else fx,
                 kanan=x0 + int(np.where(kepala[baris_terlebar])[0].max()) if lebar_kepala else fx + fw)
     return f, ukur
 
 
+def penutup_helm(f):
+    """Syarat 3: penutup kepala mulus (tekstur rendah) ATAU dagu tertutup chin bar (helm full face
+    yang banyak ventilasi/logo bisa bertekstur tinggi, tetapi dagunya pasti tertutup)."""
+    return f["tekstur"] < MAKS_TEKSTUR or (f.get("dagu", 1.0) < MAKS_KULIT_DAGU and f["tinggi"] > MIN_TINGGI_DAGU)
+
+
 def putuskan(f):
-    # Helm = kepala jauh lebih lebar DAN lebih tinggi daripada wajah, DAN penutupnya mulus
-    helm = f["lebar"] > MIN_LEBAR and f["tinggi"] > MIN_TINGGI and f["tekstur"] < MAKS_TEKSTUR
+    # Helm = kepala jauh lebih lebar DAN lebih tinggi daripada wajah, DAN (penutupnya mulus ATAU dagu tertutup)
+    helm = f["lebar"] > MIN_LEBAR and f["tinggi"] > MIN_TINGGI and penutup_helm(f)
     return "PAKAI HELM" if helm else "PELANGGARAN"
 
 
@@ -177,18 +202,21 @@ def margin(f):
     """Seberapa jauh fitur dari ambang (positif = memenuhi syarat helm). Margin keputusan = yang terkecil."""
     m = dict(lebar=(f["lebar"] - MIN_LEBAR) / SKALA_MARGIN["lebar"],
              tinggi=(f["tinggi"] - MIN_TINGGI) / SKALA_MARGIN["tinggi"],
-             tekstur=(MAKS_TEKSTUR - f["tekstur"]) / SKALA_MARGIN["tekstur"])
-    return min(m.values()), m
+             tekstur=(MAKS_TEKSTUR - f["tekstur"]) / SKALA_MARGIN["tekstur"],
+             dagu=min((MAKS_KULIT_DAGU - f.get("dagu", 1.0)) / SKALA_MARGIN["dagu"],
+                      (f["tinggi"] - MIN_TINGGI_DAGU) / SKALA_MARGIN["tinggi"]))
+    # syarat 3 terpenuhi oleh salah satu: tekstur mulus ATAU dagu tertutup (dengan penutup yang cukup tinggi)
+    return min(m["lebar"], m["tinggi"], max(m["tekstur"], m["dagu"])), m
 
 
 def alasan(f):
     if putuskan(f) == "PAKAI HELM":
-        return "Ketiga syarat terpenuhi"
+        return "Ketiga syarat terpenuhi" if f["tekstur"] < MAKS_TEKSTUR else "Helm full face: dagu tertutup chin bar"
     if f["lebar"] <= MIN_LEBAR:
         return "Kepala tidak lebih lebar dari wajah"
     if f["tinggi"] <= MIN_TINGGI:
         return "Tidak ada penutup yang menjulang di atas dahi"
-    return "Penutup kepala berlipat, bukan helm"
+    return "Penutup kepala berlipat dan dagu terlihat, bukan helm"
 
 
 def cek_helm_tanpa_wajah(img, gray):
@@ -249,7 +277,7 @@ class Penstabil:
         if not baru:
             return self._tanpa_wajah(t)
 
-        f = {k: float(np.median([x[k] for x in baru])) for k in ("lebar", "tinggi", "tekstur")}
+        f = {k: float(np.median([x.get(k, 1.0) for x in baru])) for k in ("lebar", "tinggi", "tekstur", "dagu")}
         m, per = margin(f)
         # histeresis: label sekarang dipertahankan sampai nilai jelas melewati ambang
         batas = -HISTERESIS if self.label == "helm" else HISTERESIS if self.label == "pelanggaran" else 0.0
@@ -268,12 +296,13 @@ class Penstabil:
         if self.label == "helm":
             self.waktu_helm = t
         ok = {k: v > 0 for k, v in per.items()}
+        ok["penutup"] = ok["tekstur"] or ok["dagu"]
         yakin = round(min(1.0, abs(m)), 2)
         if self.label is None:
             return dict(kelas="info", teks="Memeriksa…", sub="Tahan posisi, hadap lurus ke kamera",
                         fitur=f, ok=ok, yakin=yakin, ragu=True)
         helm = self.label == "helm"
-        sub = alasan(f) if (m > 0) == helm else ("Ketiga syarat terpenuhi" if helm else "Belum memenuhi syarat helm")
+        sub = alasan(f) if (m > 0) == helm else ("Syarat helm terpenuhi" if helm else "Belum memenuhi syarat helm")
         if ragu:
             sub += " · kurang yakin, dekatkan wajah"
         return dict(kelas="ok" if helm else "no", teks="PAKAI HELM" if helm else "PELANGGARAN", sub=sub,
@@ -306,7 +335,7 @@ def proses_gambar(img0, wajah_cadangan=None):
             raise
         wajah, cadangan = tuple(int(v) for v in wajah_cadangan), True
     kotak, mask, kepala = segmentasi_kepala(img, wajah)
-    f, ukur = fitur(wajah, kotak, kepala, gray)
+    f, ukur = fitur(wajah, kotak, kepala, gray, img)
     return dict(img=img, gray=gray, gray_eq=gray_eq, wajah=wajah, kotak=kotak, cadangan=cadangan, sumber=sumber,
                 mask=mask, kepala=kepala, fitur=f, ukur=ukur, label=putuskan(f))
 
@@ -336,6 +365,9 @@ def gambar_panel(h):
     cv2.rectangle(p7, (fx, fy), (fx + fw, fy + fh), (0, 255, 0), 2)
     cv2.line(p7, (u["kiri"], u["baris"]), (u["kanan"], u["baris"]), (0, 255, 255), 3)   # lebar kepala
     cv2.line(p7, (fx + fw // 2, u["puncak"]), (fx + fw // 2, fy), (255, 0, 255), 3)    # tinggi di atas wajah
+    if u.get("kotak_dagu"):                                                            # area dagu (warna kulit?)
+        a1, b1, a2, b2 = u["kotak_dagu"]
+        cv2.rectangle(p7, (a1, b1), (a2, b2), (255, 255, 0), 2)
     p8 = img.copy()
     cv2.rectangle(p8, (x0, max(u["puncak"], 0)), (x1, fy + fh), warna, 3)
     return [("1. Asli", img), ("2. Grayscale", h["gray"]), ("3. CLAHE", h["gray_eq"]),
@@ -344,7 +376,7 @@ def gambar_panel(h):
 
 
 def teks_fitur(f):
-    return f"lebar {f['lebar']:.2f}  tinggi {f['tinggi']:.2f}  tekstur {f['tekstur']:.3f}"
+    return f"lebar {f['lebar']:.2f}  tinggi {f['tinggi']:.2f}  tekstur {f['tekstur']:.3f}  kulit dagu {f.get('dagu', 1.0):.2f}"
 
 
 def tampilkan(path, h, simpan=False, tampil=True):

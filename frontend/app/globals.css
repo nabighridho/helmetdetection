@@ -345,3 +345,6 @@ video { object-fit: cover; }
 .info-bawah .latensi + .latensi { margin-left: 8px; }
 .latensi.yakin { color: var(--putih); }
 .latensi.yakin.ragu { color: var(--oranye); }
+
+.meter.redup { opacity: .55; }
+.titik.biru { background: #4DD8FF; }

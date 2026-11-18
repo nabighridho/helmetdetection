@@ -1,7 +1,7 @@
 import { tahapan } from "./mesin";
 // Fungsi bantu bersama
 
-export const AMBANG_AWAL = { lebar: 1.2, tinggi: 0.4, tekstur: 0.06 };
+export const AMBANG_AWAL = { lebar: 1.2, tinggi: 0.4, tekstur: 0.06, dagu: 0.15, tinggi_dagu: 0.45 };
 
 export function fmt(v, d = 2) {
   return Number(v).toFixed(d).replace(".", ",");

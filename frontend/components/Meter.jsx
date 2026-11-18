@@ -16,10 +16,10 @@ function Angka({ nilai, desimal }) {
 }
 
 // Indikator satu syarat helm: nilai, batang, dan garis ambang
-export default function Meter({ no, nama, ket, nilai, ambang, skala, lolos, desimal = 2, tandaAmbang = ">" }) {
+export default function Meter({ no, nama, ket, nilai, ambang, skala, lolos, desimal = 2, tandaAmbang = ">", redup = false }) {
   const [lo, hi] = skala;
   const persen = (v) => `${Math.max(0, Math.min(1, (v - lo) / (hi - lo))) * 100}%`;
-  const kelas = nilai == null ? "" : lolos ? "lolos" : "gagal";
+  const kelas = nilai == null ? "" : redup ? "redup" : lolos ? "lolos" : "gagal";
   return (
     <div className={`meter ${kelas}`}>
       <div className="meter-atas">

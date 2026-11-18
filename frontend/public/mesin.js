@@ -6,7 +6,7 @@ function lapor(teks, persen) {
   postMessage({ jenis: "progres", teks, persen });
 }
 
-async function mulai({ pyodide, base }) {
+async function mulai({ pyodide, base, versi = "" }) {
   lapor("Memuat Python…", 10);
   const { loadPyodide } = await import(pyodide + "pyodide.mjs");
   const py = await loadPyodide({ indexURL: pyodide });
@@ -18,7 +18,7 @@ async function mulai({ pyodide, base }) {
   const berkas = ["helmet_detection.py", "helmet_web.py", "haarcascade_frontalface_default.xml",
     "haarcascade_frontalface_alt2.xml", "haarcascade_profileface.xml"];
   for (const f of berkas) {
-    const r = await fetch(base + "py/" + f);
+    const r = await fetch(base + "py/" + f + "?v=" + versi);   // versi -> tidak memakai cache lama
     if (!r.ok) throw new Error("Berkas " + f + " tidak ditemukan");
     py.FS.writeFile(folder + "/" + f, new Uint8Array(await r.arrayBuffer()));
   }

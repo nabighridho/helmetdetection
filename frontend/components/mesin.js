@@ -3,6 +3,7 @@
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH || "";
 const PYODIDE = process.env.NEXT_PUBLIC_PYODIDE_URL || "https://cdn.jsdelivr.net/pyodide/v314.0.8/full/";
 const SERVER = process.env.NEXT_PUBLIC_MESIN_URL || "";
+const VERSI = process.env.NEXT_PUBLIC_VERSI || "dev";
 
 let worker = null, siapP = null, nomor = 0;
 const antre = new Map();
@@ -31,7 +32,7 @@ export function siapkanMesin() {
     return siapP;
   }
   siapP = new Promise((res, rej) => {
-    worker = new Worker(`${BASE}/mesin.js`, { type: "module" });
+    worker = new Worker(`${BASE}/mesin.js?v=${VERSI}`, { type: "module" });
     worker.onmessage = (e) => {
       const m = e.data;
       if (m.jenis === "progres") ubah({ tahap: "memuat", teks: m.teks, persen: m.persen });
@@ -46,7 +47,7 @@ export function siapkanMesin() {
     };
     worker.onerror = (e) => { ubah({ tahap: "gagal", teks: e.message || "Mesin gagal dimuat" }); rej(e); };
     ubah({ tahap: "memuat", teks: "Menyiapkan mesin…", persen: 3 });
-    worker.postMessage({ jenis: "mulai", pyodide: PYODIDE, base: `${location.origin}${BASE}/` });
+    worker.postMessage({ jenis: "mulai", pyodide: PYODIDE, base: `${location.origin}${BASE}/`, versi: VERSI });
   });
   return siapP;
 }

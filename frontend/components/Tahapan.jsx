@@ -29,6 +29,7 @@ export default function Tahapan({ hasil }) {
         <p className="hasil-label">{hasil.label}</p>
         <p className="hasil-angka">
           lebar {fmt(f.lebar)} · tinggi {fmt(f.tinggi)} · tekstur {fmt(f.tekstur, 3)}
+          {f.dagu != null && <> · kulit dagu {fmt(f.dagu)}</>}
         </p>
       </motion.div>
       <motion.div className="grid-tahap" variants={URUT} initial="awal" animate="tampil">
