@@ -26,6 +26,7 @@ def info():
         "ambang": {"lebar": hg.MIN_LEBAR, "tinggi": hg.MIN_TINGGI, "tekstur": hg.MAKS_TEKSTUR},
         "detik_tertutup": hg.DETIK_TERTUTUP,
         "detik_diam": hg.DETIK_DIAM,
+        "zona_ragu": hg.ZONA_RAGU,
     })
 
 
@@ -59,18 +60,48 @@ def _ringkas(h):
     }
 
 
-def analisis(data, cadangan=None):
-    """Analisis cepat satu frame kamera. cadangan = posisi wajah terakhir [x, y, w, h] atau None."""
+PENSTABIL = hg.Penstabil()      # keputusan stabil antar-frame (aturan sama dengan versi terminal)
+
+
+def reset():
+    """Dipanggil saat kamera dinyalakan ulang atau berganti sumber."""
+    PENSTABIL.reset()
+
+
+def _status(st):
+    hasil = dict(st)
+    if st.get("fitur"):
+        hasil["fitur"] = {k: round(float(v), 4) for k, v in st["fitur"].items()}
+    return hasil
+
+
+def analisis(data, cadangan=None, t=None, gerak=True):
+    """Analisis cepat satu frame kamera.
+    cadangan = posisi wajah terakhir [x, y, w, h] atau None; t = waktu (detik); gerak = ada gerakan."""
     img = _baca(data)
     if hasattr(cadangan, "to_py"):          # array dari JavaScript (Pyodide)
         cadangan = cadangan.to_py()
     cad = tuple(int(v) for v in cadangan) if cadangan else None
+    t = float(t) if t is not None else None
     try:
         h = hg.proses_gambar(img, wajah_cadangan=cad)
     except hg.TidakAdaWajah:
-        return json.dumps({"wajah": False})
+        im, gray, _ = hg.praproses(img)
+        cek = hg.cek_helm_tanpa_wajah(im, gray)
+        hasil = {"wajah": False}
+        if cek["lingkaran"]:
+            H, W = im.shape[:2]
+            x, y, r = cek["lingkaran"]
+            hasil["lingkaran"] = [x / W, y / H, r / W]
+            hasil["helm_tanpa_wajah"] = bool(cek["helm"])
+        if t is not None:
+            hasil["status"] = _status(PENSTABIL.perbarui(t, None, cek, bool(gerak)))
+        return json.dumps(hasil)
     hasil = _ringkas(h)
     hasil["pakai_cadangan"] = bool(h.get("cadangan"))
+    hasil["sumber"] = h.get("sumber")
+    if t is not None:
+        hasil["status"] = _status(PENSTABIL.perbarui(t, h, None, bool(gerak)))
     return json.dumps(hasil)
 
 
@@ -80,8 +111,12 @@ def tahapan(data):
     try:
         h = hg.proses_gambar(img)
     except hg.TidakAdaWajah:
-        return json.dumps({"wajah": False, "pesan": "Wajah tidak terlihat. Jika memakai helm kaca gelap, "
-                                                    "buka kacanya untuk melihat proses pengukuran."})
+        im, gray, _ = hg.praproses(img)
+        cek = hg.cek_helm_tanpa_wajah(im, gray)
+        pesan = ("Wajah tidak terlihat, tetapi bentuk helm yang bulat dan mulus terdeteksi (transformasi Hough). "
+                 "Buka kaca helm untuk melihat 8 tahap pengukuran." if cek["helm"] else
+                 "Wajah tidak terlihat. Hadapkan wajah ke kamera, atau buka kaca helm untuk melihat proses pengukuran.")
+        return json.dumps({"wajah": False, "pesan": pesan})
     hasil = _ringkas(h)
     hasil["panel"] = [{"judul": judul, "keterangan": ket, "gambar": _jpeg64(im)}
                       for (judul, im), ket in zip(hg.gambar_panel(h), PENJELASAN)]

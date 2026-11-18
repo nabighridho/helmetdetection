@@ -51,20 +51,24 @@ export function siapkanMesin() {
   return siapP;
 }
 
-async function kirim(jenis, blob, cadangan) {
+async function kirim(jenis, blob, cadangan, t, gerak) {
   await siapkanMesin();
   if (SERVER) {
-    let url = `${SERVER}/api/${jenis}`;
-    if (cadangan) url += `?fx=${cadangan[0]}&fy=${cadangan[1]}&fw=${cadangan[2]}&fh=${cadangan[3]}`;
-    return (await fetch(url, { method: "POST", body: blob })).json();
+    const q = new URLSearchParams();
+    if (cadangan) ["fx", "fy", "fw", "fh"].forEach((k, i) => q.set(k, cadangan[i]));
+    if (t != null) { q.set("t", t); q.set("gerak", gerak ? 1 : 0); }
+    const r = await fetch(`${SERVER}/api/${jenis}?${q}`, { method: "POST", body: blob || "" });
+    return r.json();
   }
-  const data = await blob.arrayBuffer();
+  const data = blob ? await blob.arrayBuffer() : null;
   const id = ++nomor;
   return new Promise((res, rej) => {
     antre.set(id, { res, rej });
-    worker.postMessage({ jenis, id, data, cadangan }, [data]);
+    worker.postMessage({ jenis, id, data, cadangan, t, gerak }, data ? [data] : []);
   });
 }
 
-export const analisis = (blob, cadangan) => kirim("analisis", blob, cadangan);
+// Satu frame kamera. t = waktu (detik) dan gerak = ada gerakan, untuk penstabil keputusan di Python.
+export const analisis = (blob, cadangan, t, gerak) => kirim("analisis", blob, cadangan, t, gerak);
 export const tahapan = (blob) => kirim("tahapan", blob);
+export const resetPenstabil = () => kirim("reset", null).catch(() => {});

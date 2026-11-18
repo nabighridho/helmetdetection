@@ -60,6 +60,20 @@ Fitur kamera HP butuh link GitHub Pages, karena HP tidak bisa membuka `localhost
 | Ganti kamera | Laptop: webcam ↔ kamera HP. HP: kamera depan ↔ belakang |
 | Matikan kamera | Menghentikan kamera dan analisis |
 
+## Agar hasil stabil
+
+Metode utama tetap Bab 2, 3, 9, 10. Bagian pendukung berikut dipakai supaya program tidak mudah salah:
+
+| Bagian | Fungsi |
+| --- | --- |
+| Detektor wajah berlapis (pendukung) | Wajah depan → model wajah depan kedua (`alt2`) → wajah dari samping |
+| Pemeriksa helm tanpa wajah (Bab 10, transformasi Hough) | Saat wajah tertutup kaca gelap, cari lingkaran besar (cangkang helm) yang permukaannya mulus |
+| Penstabil keputusan | Median 2 detik, histeresis, dan jeda 0,6 detik sebelum label berganti; nilai dekat ambang ditandai "kurang yakin" |
+| Ingatan kaca ditutup | Wajah hilang ≤ 5 detik setelah terdeteksi helm tetap dianggap PAKAI HELM |
+
+Jika wajah tidak terlihat dan bentuk helm tidak ditemukan, status menjadi "Wajah tidak terlihat"
+(tidak lagi otomatis dianggap pakai helm).
+
 ## Bab yang dipakai (Gonzalez & Woods)
 
 | Bab | Metode |

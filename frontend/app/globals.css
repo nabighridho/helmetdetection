@@ -341,3 +341,7 @@ video { object-fit: cover; }
 .pengirim .layar { aspect-ratio: 3 / 4; }
 .catatan-hp { text-align: center; color: var(--abu); font-size: 13px; margin-top: 16px; }
 .catatan-hp a { color: var(--kuning); }
+
+.info-bawah .latensi + .latensi { margin-left: 8px; }
+.latensi.yakin { color: var(--putih); }
+.latensi.yakin.ragu { color: var(--oranye); }

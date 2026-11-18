@@ -15,7 +15,9 @@ async function mulai({ pyodide, base }) {
   lapor("Memuat kode deteksi helm…", 85);
   const folder = "/home/pyodide/helm";
   py.FS.mkdirTree(folder);
-  for (const f of ["helmet_detection.py", "helmet_web.py", "haarcascade_frontalface_default.xml"]) {
+  const berkas = ["helmet_detection.py", "helmet_web.py", "haarcascade_frontalface_default.xml",
+    "haarcascade_frontalface_alt2.xml", "haarcascade_profileface.xml"];
+  for (const f of berkas) {
     const r = await fetch(base + "py/" + f);
     if (!r.ok) throw new Error("Berkas " + f + " tidak ditemukan");
     py.FS.writeFile(folder + "/" + f, new Uint8Array(await r.arrayBuffer()));
@@ -34,8 +36,14 @@ onmessage = async (e) => {
     return;
   }
   try {
+    if (m.jenis === "reset") {
+      hw.reset();
+      postMessage({ jenis: "hasil", id: m.id, hasil: { ok: true } });
+      return;
+    }
     const data = new Uint8Array(m.data);
-    const teks = m.jenis === "tahapan" ? hw.tahapan(data) : hw.analisis(data, m.cadangan || null);
+    const teks = m.jenis === "tahapan" ? hw.tahapan(data)
+      : hw.analisis(data, m.cadangan || null, m.t ?? null, m.gerak ?? true);
     postMessage({ jenis: "hasil", id: m.id, hasil: JSON.parse(teks) });
   } catch (err) {
     postMessage({ jenis: "hasil", id: m.id, galat: String(err && err.message || err) });

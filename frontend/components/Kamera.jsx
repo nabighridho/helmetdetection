@@ -7,8 +7,8 @@ import Meter from "./Meter";
 import Tombol from "./Tombol";
 import { NAIK, PEGAS, URUT } from "./gerak";
 import { alamatLokal, bukaPenerima, linkHP } from "./hp";
-import { analisis, pantauMesin, siapkanMesin } from "./mesin";
-import { median, putuskan, tunggu } from "./util";
+import { analisis, pantauMesin, resetPenstabil, siapkanMesin } from "./mesin";
+import { tunggu } from "./util";
 
 const SKALA = { lebar: [0, 2], tinggi: [0, 1], tekstur: [0, 0.15] };
 const STATUS_AWAL = { kelas: "", teks: "Kamera belum aktif", sub: "Tekan “Mulai kamera”, lalu hadap ke kamera" };
@@ -20,7 +20,7 @@ export default function Kamera({ info, onLihatTahap, mintaHP }) {
   const videoRef = useRef(null);
   const overlayRef = useRef(null);
   const st = useRef({
-    stream: null, jalan: false, riwayat: [], terakhir: null, gen: 0, hp: null, deviceId: null,
+    stream: null, jalan: false, terakhir: null, gen: 0, hp: null, deviceId: null,
     wajahTerakhir: null, waktuWajah: 0, waktuGerak: 0, gerakLalu: null,
   });
   const infoRef = useRef(info);
@@ -50,26 +50,14 @@ export default function Kamera({ info, onLihatTahap, mintaHP }) {
     return new Promise((res) => c.toBlob(res, "image/jpeg", kualitas));
   }, []);
 
-  // ------------------------------------------------------------ keputusan
-  const perbaruiKeputusan = useCallback((now) => {
-    const s = st.current, inf = infoRef.current;
-    s.riwayat = s.riwayat.filter((r) => now - r.t < 2000).slice(-7);
-    if (!s.riwayat.length) {
-      s.terakhir = null;
-      setFitur(null);
-      if (now - s.waktuGerak > inf.detik_diam * 1000) setStatus({ kelas: "", teks: "Tidak ada orang", sub: "Belum ada pengendara di depan kamera" });
-      else if (now - s.waktuWajah > inf.detik_tertutup * 1000) setStatus({ kelas: "ok", teks: "PAKAI HELM", sub: "Wajah tertutup kaca helm gelap" });
-      else setStatus({ kelas: "info", teks: "Mencari wajah…", sub: "Hadap ke kamera" });
-      return;
-    }
-    const f = {
-      lebar: median(s.riwayat.map((r) => r.lebar)),
-      tinggi: median(s.riwayat.map((r) => r.tinggi)),
-      tekstur: median(s.riwayat.map((r) => r.tekstur)),
-    };
-    const k = putuskan(f, inf.ambang);
-    setFitur({ ...f, ok: k.ok });
-    setStatus({ kelas: k.helm ? "ok" : "no", teks: k.helm ? "PAKAI HELM" : "PELANGGARAN", sub: k.alasan });
+  // ------------------------------------------------------------ keputusan (dihitung oleh penstabil di Python)
+  const terapkanStatus = useCallback((j) => {
+    const st2 = j.status;
+    if (!st2) return;
+    if (st2.fitur) setFitur({ ...st2.fitur, ok: st2.ok });
+    else setFitur(null);
+    const samping = j.sumber === "samping" && st2.fitur ? " · wajah dari samping" : "";
+    setStatus({ kelas: st2.kelas, teks: st2.teks, sub: st2.sub + samping, yakin: st2.yakin, ragu: st2.ragu });
   }, []);
 
   // ------------------------------------------------------------ loop analisis (Python di browser)
@@ -88,7 +76,8 @@ export default function Kamera({ info, onLihatTahap, mintaHP }) {
         const t0 = performance.now();
         const blob = await frameJpeg();
         const cadangan = s.wajahTerakhir && performance.now() - s.waktuWajah < 1000 ? s.wajahTerakhir : null;
-        const j = await analisis(blob, cadangan);
+        const gerak = performance.now() - s.waktuGerak < 700;
+        const j = await analisis(blob, cadangan, t0 / 1000, gerak);
         if (!s.jalan || s.gen !== gen) break;      // kamera sudah dimatikan saat menunggu hasil
         const t = performance.now();
         s.latensi = s.latensi == null ? t - t0 : s.latensi * 0.7 + (t - t0) * 0.3;
@@ -96,9 +85,10 @@ export default function Kamera({ info, onLihatTahap, mintaHP }) {
         if (j.wajah) {
           // overlay hanya dari deteksi asli; kotak "cadangan" (posisi lama) tidak digambar
           if (!j.pakai_cadangan) { s.terakhir = { ...j, t }; s.wajahTerakhir = j.wajah_px; s.waktuWajah = t; }
-          s.riwayat.push({ t, ...j.fitur });
+        } else if (j.helm_tanpa_wajah) {
+          s.terakhir = { lingkaran: j.lingkaran, t };   // bentuk helm (Hough) saat wajah tertutup
         }
-        perbaruiKeputusan(t);
+        terapkanStatus(j);
       } catch {
         if (!s.jalan || s.gen !== gen) break;
         setStatus({ kelas: "info", teks: "Analisis gagal", sub: "Mencoba lagi…" });
@@ -106,7 +96,7 @@ export default function Kamera({ info, onLihatTahap, mintaHP }) {
       }
       await tunggu(30);
     }
-  }, [frameJpeg, perbaruiKeputusan]);
+  }, [frameJpeg, terapkanStatus]);
 
   // ------------------------------------------------------------ deteksi gerakan (ada orang atau tidak)
   const loopGerak = useCallback(async () => {
@@ -151,6 +141,14 @@ export default function Kamera({ info, onLihatTahap, mintaHP }) {
       const ox = (o.width - vw * sk) / 2, oy = (o.height - vh * sk) / 2;
       const X = (nx) => ox + nx * vw * sk, Y = (ny) => oy + ny * vh * sk;
       ctx.lineWidth = 3 * dpr;
+      if (h.lingkaran) {                                          // helm tanpa wajah (Hough)
+        const [cx, cy, cr] = h.lingkaran;
+        ctx.strokeStyle = "#FFE14D"; ctx.setLineDash([10 * dpr, 8 * dpr]);
+        ctx.beginPath(); ctx.arc(X(cx), Y(cy), cr * vw * sk, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+        if (s.jalan) requestAnimationFrame(gambar);
+        return;
+      }
       const [fx, fy, fw, fh] = h.kotak_wajah;
       ctx.strokeStyle = "#3CE07A"; ctx.strokeRect(X(fx), Y(fy), fw * vw * sk, fh * vh * sk);
       const [kx1, ky, kx2] = h.garis_lebar;
@@ -165,8 +163,9 @@ export default function Kamera({ info, onLihatTahap, mintaHP }) {
   // ------------------------------------------------------------ jalankan analisis untuk video yang sedang tampil
   const mulaiAnalisis = useCallback(() => {
     const s = st.current;
-    s.riwayat = []; s.terakhir = null; s.wajahTerakhir = null; s.gerakLalu = null; s.latensi = null;
+    s.terakhir = null; s.wajahTerakhir = null; s.gerakLalu = null; s.latensi = null;
     s.waktuWajah = s.waktuGerak = performance.now();
+    resetPenstabil();
     setAktif(true); setFitur(null); setLatensi(null);
     setStatus({ kelas: "info", teks: "Mencari wajah…", sub: "Hadap ke kamera" });
     if (!s.jalan) { s.jalan = true; s.gen += 1; loopAnalisis(); loopGerak(); requestAnimationFrame(gambar); }
@@ -319,7 +318,7 @@ export default function Kamera({ info, onLihatTahap, mintaHP }) {
     lepasHP();
     if (videoRef.current) videoRef.current.srcObject = null;
     setSumber("lokal");
-    st.current.riwayat = []; st.current.wajahTerakhir = null;
+    st.current.wajahTerakhir = null;
     setStatus({ kelas: "", teks: "Kamera mati", sub: "Tekan “Mulai kamera” untuk memeriksa lagi" });
   }
 
@@ -375,6 +374,11 @@ export default function Kamera({ info, onLihatTahap, mintaHP }) {
           {aktif && (
             <div className="info-bawah">
               <span className="chip-langsung"><span className="denyut" />{sumber === "hp" ? "KAMERA HP" : "LANGSUNG"}</span>
+              {status.yakin != null && (
+                <span className={`latensi yakin ${status.ragu ? "ragu" : ""}`} title="Seberapa jauh nilai fitur dari ambang">
+                  yakin {Math.round(status.yakin * 100)}%
+                </span>
+              )}
               {latensi != null && (
                 <span className="latensi" title="Waktu dari pengambilan gambar sampai hasil analisis kembali">
                   analisis ≈ {latensi} ms

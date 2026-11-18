@@ -13,14 +13,25 @@ MIN_TINGGI = 0.40      # tinggi kepala di atas wajah / tinggi wajah (tanpa helm 
 MAKS_TEKSTUR = 0.06    # kepadatan tepi penutup kepala (helm mulus 0.01-0.04, kerudung berlipat ~0.09)
 MIN_YAKIN = 0.5        # keyakinan minimal deteksi wajah
 MAKS_LEBAR_WAJAH = 0.5 # kotak wajah lebih lebar dari 50% gambar dianggap salah deteksi
-DETIK_TERTUTUP = 1.5   # wajah tidak terlihat selama ini -> dianggap helm kaca gelap
+DETIK_TERTUTUP = 1.5   # wajah tidak terlihat selama ini -> periksa apakah tertutup kaca helm
 DETIK_DIAM = 3.0       # tidak ada gerakan selama ini -> dianggap tidak ada orang
 MIN_GERAK = 0.002      # proporsi piksel berubah (selisih antar-frame) agar dianggap ada gerakan
+
+# Penstabil keputusan (supaya label tidak berkedip)
+DETIK_RIWAYAT = 2.0    # keputusan diambil dari median pengukuran selama 2 detik terakhir
+ZONA_RAGU = 0.25       # margin < 0.25 dari ambang -> "kurang yakin"
+HISTERESIS = 0.15      # label baru berganti bila melewati ambang lebih dari margin ini
+DETIK_GANTI = 0.6      # label baru harus bertahan selama ini sebelum ditampilkan
+DETIK_INGAT_HELM = 5.0 # wajah hilang < 5 detik setelah terdeteksi helm -> kaca helm baru ditutup
+SKALA_MARGIN = dict(lebar=0.20, tinggi=0.20, tekstur=0.03)   # 1 margin = jarak sebesar ini dari ambang
+
+# Pemeriksa helm saat wajah tidak terlihat (transformasi Hough, Chapter 10)
+MAKS_TEPI_TANPA_WAJAH = 0.05  # kepadatan tepi di dalam lingkaran helm (helm kaca gelap 0.015-0.041)
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def _muat_detektor():
+def _muat_detektor(nama, wajib=True):
     # OpenCV 4: cv2.CascadeClassifier. OpenCV 5: ada di paket opencv-contrib-python.
     Cascade = getattr(cv2, "CascadeClassifier", None) or getattr(getattr(cv2, "xobjdetect", None),
                                                                 "CascadeClassifier", None)
@@ -28,16 +39,21 @@ def _muat_detektor():
         raise ImportError("Detektor wajah tidak tersedia di OpenCV ini. Jalankan:\n"
                           "  pip uninstall -y opencv-python\n  pip install opencv-contrib-python")
     for folder in (_DIR, getattr(getattr(cv2, "data", None), "haarcascades", "")):
-        p = os.path.join(folder, "haarcascade_frontalface_default.xml")
+        p = os.path.join(folder, nama)
         if os.path.exists(p):
             c = Cascade(p)
             if not c.empty():
                 return c
-    raise FileNotFoundError("File haarcascade_frontalface_default.xml tidak ditemukan. "
-                            "Letakkan file itu di folder yang sama dengan helmetguard.py.")
+    if wajib:
+        raise FileNotFoundError(f"File {nama} tidak ditemukan. Letakkan file itu di folder yang sama dengan program.")
+    return None
 
 
-DETEKTOR_WAJAH = _muat_detektor()
+# Pendukung (di luar Chapter 1-10): detektor wajah Viola-Jones berlapis.
+# Utama = wajah depan; cadangan = model wajah depan kedua (alt2); terakhir = wajah dari samping.
+DETEKTOR_WAJAH = _muat_detektor("haarcascade_frontalface_default.xml")
+DETEKTOR_CADANGAN = _muat_detektor("haarcascade_frontalface_alt2.xml", wajib=False)
+DETEKTOR_SAMPING = _muat_detektor("haarcascade_profileface.xml", wajib=False)
 
 
 class TidakAdaWajah(Exception):
@@ -54,16 +70,32 @@ def praproses(img):
     return img, gray, clahe.apply(gray)
 
 
-def cari_wajah(gray_eq):
+def cari_wajah(gray_eq, dengan_sumber=False):
+    """Cari satu wajah. Lapisan: wajah depan -> wajah depan (model kedua) -> wajah samping."""
+    W = gray_eq.shape[1]
+    wajar = lambda b: b[2] <= MAKS_LEBAR_WAJAH * W          # kotak raksasa biasanya helm dikira wajah
+
+    def hasil(kotak, sumber):
+        kotak = tuple(int(v) for v in kotak)
+        return (kotak, sumber) if dengan_sumber else kotak
+
     wajah, _, yakin = DETEKTOR_WAJAH.detectMultiScale3(gray_eq, scaleFactor=1.1, minNeighbors=5,
                                                        minSize=(60, 60), outputRejectLevels=True)
-    W = gray_eq.shape[1]
-    # Tolak deteksi meragukan: keyakinan rendah atau kotak terlalu besar (biasanya seluruh helm dikira wajah)
-    calon = [(tuple(int(v) for v in b), float(k)) for b, k in zip(wajah, np.ravel(yakin))
-             if float(k) >= MIN_YAKIN and b[2] <= MAKS_LEBAR_WAJAH * W]
-    if not calon:
-        raise TidakAdaWajah("Wajah tidak terdeteksi")
-    return max(calon, key=lambda c: c[1])[0]           # wajah paling meyakinkan
+    # Tolak deteksi meragukan: keyakinan rendah atau kotak terlalu besar
+    calon = [(b, float(k)) for b, k in zip(wajah, np.ravel(yakin)) if float(k) >= MIN_YAKIN and wajar(b)]
+    if calon:
+        return hasil(max(calon, key=lambda c: c[1])[0], "depan")   # wajah paling meyakinkan
+    if DETEKTOR_CADANGAN is not None:                           # mis. wajah di dalam helm yang gelap
+        calon = [b for b in DETEKTOR_CADANGAN.detectMultiScale(gray_eq, 1.1, 4, minSize=(60, 60)) if wajar(b)]
+        if calon:
+            return hasil(max(calon, key=lambda b: b[2]), "depan")
+    if DETEKTOR_SAMPING is not None:                            # kepala menoleh ke kiri / kanan
+        calon = [b for b in DETEKTOR_SAMPING.detectMultiScale(gray_eq, 1.1, 5, minSize=(60, 60)) if wajar(b)]
+        calon += [(W - x - w, y, w, h) for x, y, w, h in
+                  DETEKTOR_SAMPING.detectMultiScale(cv2.flip(gray_eq, 1), 1.1, 5, minSize=(60, 60)) if wajar((x, y, w, h))]
+        if calon:
+            return hasil(max(calon, key=lambda b: b[2]), "samping")
+    raise TidakAdaWajah("Wajah tidak terdeteksi")
 
 
 def segmentasi_kepala(img, wajah):
@@ -75,8 +107,10 @@ def segmentasi_kepala(img, wajah):
     area = img[y0:y1, x0:x1]
     m = np.full(area.shape[:2], cv2.GC_PR_BGD, np.uint8)
     cx, cy = fx + fw // 2 - x0, fy + fh // 2 - y0
-    # perkiraan awal kepala = elips di sekitar wajah (mungkin kepala)
-    cv2.ellipse(m, (cx, cy - int(0.2 * fh)), (int(0.75 * fw), int(0.95 * fh)), 0, 0, 360, cv2.GC_PR_FGD, -1)
+    # perkiraan awal kepala = elips dari dagu sampai jauh di atas dahi (mungkin kepala).
+    # Pusatnya digeser ke atas karena helm/rambut ada DI ATAS wajah; dengan begitu kubah helm
+    # yang warnanya mirip latar (abu-abu) tetap ikut tersegmentasi.
+    cv2.ellipse(m, (cx, cy - int(0.45 * fh)), (int(0.75 * fw), int(0.95 * fh)), 0, 0, 360, cv2.GC_PR_FGD, -1)
     # bagian tengah wajah pasti kepala
     m[fy - y0 + int(0.2 * fh):fy - y0 + int(0.8 * fh), fx - x0 + int(0.2 * fw):fx - x0 + int(0.8 * fw)] = cv2.GC_FGD
     # tepi kiri/kanan area pasti latar (juga tepi atas, kecuali area menyentuh batas foto)
@@ -137,19 +171,141 @@ def putuskan(f):
     return "PAKAI HELM" if helm else "PELANGGARAN"
 
 
+def margin(f):
+    """Seberapa jauh fitur dari ambang (positif = memenuhi syarat helm). Margin keputusan = yang terkecil."""
+    m = dict(lebar=(f["lebar"] - MIN_LEBAR) / SKALA_MARGIN["lebar"],
+             tinggi=(f["tinggi"] - MIN_TINGGI) / SKALA_MARGIN["tinggi"],
+             tekstur=(MAKS_TEKSTUR - f["tekstur"]) / SKALA_MARGIN["tekstur"])
+    return min(m.values()), m
+
+
+def alasan(f):
+    if putuskan(f) == "PAKAI HELM":
+        return "Ketiga syarat terpenuhi"
+    if f["lebar"] <= MIN_LEBAR:
+        return "Kepala tidak lebih lebar dari wajah"
+    if f["tinggi"] <= MIN_TINGGI:
+        return "Tidak ada penutup yang menjulang di atas dahi"
+    return "Penutup kepala berlipat, bukan helm"
+
+
+def cek_helm_tanpa_wajah(img, gray):
+    """Saat wajah tidak terlihat (mis. kaca helm gelap): cari bentuk helm.
+    Chapter 10: transformasi Hough mencari lingkaran besar (cangkang helm),
+    lalu kepadatan tepi Canny di dalamnya harus rendah (permukaan helm mulus)."""
+    H, W = gray.shape
+    c = cv2.HoughCircles(cv2.medianBlur(gray, 7), cv2.HOUGH_GRADIENT, dp=1.5, minDist=W // 3,
+                         param1=90, param2=40, minRadius=int(0.12 * W), maxRadius=int(0.35 * W))
+    if c is None:
+        return dict(helm=False, lingkaran=None, tepi=None)
+    c = [t for t in np.round(c[0]).astype(int) if 0.2 * W < t[0] < 0.8 * W and t[1] < 0.7 * H]
+    if not c:
+        return dict(helm=False, lingkaran=None, tepi=None)
+    x, y, r = (int(v) for v in c[0])
+    s = 100 / r                                            # samakan skala: jari-jari 100 px
+    g = cv2.resize(gray, None, fx=s, fy=s)
+    m = np.zeros(g.shape, np.uint8)
+    cv2.circle(m, (int(x * s), int(y * s)), 88, 255, -1)
+    tepi_img = cv2.Canny(cv2.GaussianBlur(g, (3, 3), 0), 40, 100)
+    tepi = float(np.count_nonzero(tepi_img[m > 0]) / max(np.count_nonzero(m), 1))
+    return dict(helm=tepi < MAKS_TEPI_TANPA_WAJAH, lingkaran=(x, y, r), tepi=tepi)
+
+
+class Penstabil:
+    """Menstabilkan keputusan dari frame ke frame (dipakai webcam terminal dan web).
+    - median pengukuran 2 detik terakhir
+    - histeresis + jeda ganti label -> label tidak berkedip saat nilai dekat ambang
+    - wajah hilang: PAKAI HELM hanya jika baru saja terdeteksi helm (kaca ditutup)
+      atau bentuk helm bulat-mulus ditemukan; selain itu "Wajah tidak terlihat"."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.riwayat = deque(maxlen=7)
+        self.tanpa_wajah = deque(maxlen=6)
+        self.waktu_wajah = None
+        self.waktu_gerak = None
+        self.label = None
+        self.calon, self.waktu_calon = None, 0.0
+        self.waktu_helm = -1e9
+
+    def perbarui(self, t, h=None, tanpa_wajah=None, gerak=True):
+        """t = waktu (detik). h = hasil proses_gambar (None jika tidak ada wajah)."""
+        if self.waktu_gerak is None:
+            self.waktu_gerak = self.waktu_wajah = t
+        if gerak:
+            self.waktu_gerak = t
+        if h is not None:
+            self.riwayat.append((t, h["fitur"]))
+            if not h.get("cadangan"):
+                self.waktu_wajah = t
+        if tanpa_wajah is not None:
+            self.tanpa_wajah.append((t, tanpa_wajah["helm"]))
+        baru = [f for w, f in self.riwayat if t - w < DETIK_RIWAYAT]
+
+        if not baru:
+            return self._tanpa_wajah(t)
+
+        f = {k: float(np.median([x[k] for x in baru])) for k in ("lebar", "tinggi", "tekstur")}
+        m, per = margin(f)
+        # histeresis: label sekarang dipertahankan sampai nilai jelas melewati ambang
+        batas = -HISTERESIS if self.label == "helm" else HISTERESIS if self.label == "pelanggaran" else 0.0
+        target = "helm" if m > batas else "pelanggaran"
+        ragu = abs(m) < ZONA_RAGU
+        if self.label is None:
+            if not ragu or len(baru) >= 3:
+                self.label = target
+        elif target != self.label:
+            if self.calon != target:
+                self.calon, self.waktu_calon = target, t
+            elif t - self.waktu_calon >= DETIK_GANTI:
+                self.label, self.calon = target, None
+        else:
+            self.calon = None
+        if self.label == "helm":
+            self.waktu_helm = t
+        ok = {k: v > 0 for k, v in per.items()}
+        yakin = round(min(1.0, abs(m)), 2)
+        if self.label is None:
+            return dict(kelas="info", teks="Memeriksa…", sub="Tahan posisi, hadap lurus ke kamera",
+                        fitur=f, ok=ok, yakin=yakin, ragu=True)
+        helm = self.label == "helm"
+        sub = alasan(f) if (m > 0) == helm else ("Ketiga syarat terpenuhi" if helm else "Belum memenuhi syarat helm")
+        if ragu:
+            sub += " · kurang yakin, dekatkan wajah"
+        return dict(kelas="ok" if helm else "no", teks="PAKAI HELM" if helm else "PELANGGARAN", sub=sub,
+                    fitur=f, ok=ok, yakin=yakin, ragu=ragu)
+
+    def _tanpa_wajah(self, t):
+        tanpa = dict(fitur=None, ok=None, yakin=None, ragu=False)
+        if t - self.waktu_gerak > DETIK_DIAM:
+            self.label = None
+            return dict(kelas="", teks="Tidak ada orang", sub="Belum ada pengendara di depan kamera", **tanpa)
+        if t - self.waktu_wajah <= DETIK_TERTUTUP:
+            return dict(kelas="info", teks="Mencari wajah…", sub="Hadap ke kamera", **tanpa)
+        if t - self.waktu_helm < DETIK_INGAT_HELM:
+            return dict(kelas="ok", teks="PAKAI HELM", sub="Kaca helm ditutup (sebelumnya terdeteksi helm)", **tanpa)
+        cek = [helm for w, helm in self.tanpa_wajah if t - w < DETIK_RIWAYAT]
+        if len(cek) >= 2 and sum(cek) / len(cek) >= 0.6:
+            return dict(kelas="ok", teks="PAKAI HELM", sub="Wajah tertutup kaca helm; bentuk helm terdeteksi", **tanpa)
+        self.label = None
+        return dict(kelas="info", teks="Wajah tidak terlihat", sub="Hadap ke kamera atau buka kaca helm sebentar", **tanpa)
+
+
 def proses_gambar(img0, wajah_cadangan=None):
     """wajah_cadangan: posisi wajah terakhir (dipakai webcam) jika wajah sesaat tidak terdeteksi."""
     img, gray, gray_eq = praproses(img0)
-    cadangan = False
+    cadangan, sumber = False, "cadangan"
     try:
-        wajah = cari_wajah(gray_eq)
+        wajah, sumber = cari_wajah(gray_eq, dengan_sumber=True)
     except TidakAdaWajah:
         if wajah_cadangan is None:
             raise
-        wajah, cadangan = wajah_cadangan, True
+        wajah, cadangan = tuple(int(v) for v in wajah_cadangan), True
     kotak, mask, kepala = segmentasi_kepala(img, wajah)
     f, ukur = fitur(wajah, kotak, kepala, gray)
-    return dict(img=img, gray=gray, gray_eq=gray_eq, wajah=wajah, kotak=kotak, cadangan=cadangan,
+    return dict(img=img, gray=gray, gray_eq=gray_eq, wajah=wajah, kotak=kotak, cadangan=cadangan, sumber=sumber,
                 mask=mask, kepala=kepala, fitur=f, ukur=ukur, label=putuskan(f))
 
 
@@ -325,8 +481,8 @@ def webcam(kamera=0):
     kunci = threading.Lock()
 
     def pekerja():
-        riwayat = deque(maxlen=7)                         # pengukuran terakhir (waktu, lebar, tinggi)
-        wajah_terakhir, waktu_wajah = None, time.time()
+        penstabil = Penstabil()                           # aturan stabilisasi yang sama dengan versi web
+        wajah_terakhir, waktu_wajah = None, 0.0
         while bersama["jalan"]:
             with kunci:
                 frame = None if bersama["frame"] is None else bersama["frame"].copy()
@@ -335,30 +491,17 @@ def webcam(kamera=0):
                 continue
             sekarang = time.time()
             cadangan = wajah_terakhir if sekarang - waktu_wajah < 1.0 else None
+            h = tanpa = None
             try:
                 h = proses_gambar(frame, wajah_cadangan=cadangan)
-                if h["wajah"] is not cadangan:
+                if not h["cadangan"]:
                     wajah_terakhir, waktu_wajah = h["wajah"], sekarang
-                riwayat.append((sekarang, h["fitur"]["lebar"], h["fitur"]["tinggi"], h["fitur"]["tekstur"]))
             except TidakAdaWajah:
-                pass
-            baru = [r for r in riwayat if sekarang - r[0] < 2.0]
-            if not baru and sekarang - bersama["gerak_terakhir"] > DETIK_DIAM:
-                label, warna = "Tidak ada orang di depan kamera", (200, 200, 200)
-            elif not baru and sekarang - waktu_wajah > DETIK_TERTUTUP:
-                # Pelanggar pasti memperlihatkan wajah. Wajah tidak terlihat sama sekali
-                # (padahal ada orang di depan kamera) -> kemungkinan besar tertutup kaca helm gelap.
-                label, warna = "PAKAI HELM (wajah tertutup kaca gelap)", (0, 200, 0)
-            elif not baru:
-                label, warna = "Mencari wajah...", (0, 200, 255)
-            else:
-                # Keputusan dari median beberapa pengukuran terakhir -> label tidak berkedip
-                f = dict(lebar=float(np.median([r[1] for r in baru])),
-                         tinggi=float(np.median([r[2] for r in baru])),
-                         tekstur=float(np.median([r[3] for r in baru])))
-                hasil = putuskan(f)
-                label = f"{hasil}  ({teks_fitur(f)})"
-                warna = (0, 200, 0) if hasil == "PAKAI HELM" else (0, 0, 255)
+                img, gray, _ = praproses(frame)
+                tanpa = cek_helm_tanpa_wajah(img, gray)
+            st = penstabil.perbarui(sekarang, h, tanpa, gerak=sekarang - bersama["gerak_terakhir"] < 0.7)
+            label = st["teks"] + (f"  ({teks_fitur(st['fitur'])})" if st["fitur"] else f"  - {st['sub']}")
+            warna = {"ok": (0, 200, 0), "no": (0, 0, 255), "info": (0, 200, 255)}.get(st["kelas"], (200, 200, 200))
             with kunci:
                 bersama["label"], bersama["warna"] = label, warna
             time.sleep(0.05)
@@ -397,7 +540,7 @@ def webcam(kamera=0):
                 hasil_8 = panel_8(proses_gambar(frame))
                 cv2.imshow("HelmetGuard - Hasil 8 tahap", hasil_8)
             except TidakAdaWajah:
-                print("Wajah tidak terlihat: dianggap PAKAI HELM kaca gelap (buka kaca helm untuk melihat 8 tahap).")
+                print("Wajah tidak terlihat. Buka kaca helm / hadap ke kamera untuk melihat 8 tahap.")
         elif k in (ord("h"), ord("p")):
             sub = "helm" if k == ord("h") else "pelanggaran"
             d = os.path.join("dataset", sub)
