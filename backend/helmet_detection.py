@@ -110,7 +110,7 @@ def segmentasi_kepala(img, wajah):
     # perkiraan awal kepala = elips dari dagu sampai jauh di atas dahi (mungkin kepala).
     # Pusatnya digeser ke atas karena helm/rambut ada DI ATAS wajah; dengan begitu kubah helm
     # yang warnanya mirip latar (abu-abu) tetap ikut tersegmentasi.
-    cv2.ellipse(m, (cx, cy - int(0.45 * fh)), (int(0.75 * fw), int(0.95 * fh)), 0, 0, 360, cv2.GC_PR_FGD, -1)
+    cv2.ellipse(m, (cx, cy - int(0.45 * fh)), (int(0.75 * fw), int(1.05 * fh)), 0, 0, 360, cv2.GC_PR_FGD, -1)
     # bagian tengah wajah pasti kepala
     m[fy - y0 + int(0.2 * fh):fy - y0 + int(0.8 * fh), fx - x0 + int(0.2 * fw):fx - x0 + int(0.8 * fw)] = cv2.GC_FGD
     # tepi kiri/kanan area pasti latar (juga tepi atas, kecuali area menyentuh batas foto)
@@ -123,6 +123,8 @@ def segmentasi_kepala(img, wajah):
     kecil = cv2.resize(area, None, fx=skala, fy=skala, interpolation=cv2.INTER_AREA)
     m_kecil = cv2.resize(m, (kecil.shape[1], kecil.shape[0]), interpolation=cv2.INTER_NEAREST)
     bgd, fgd = np.zeros((1, 65)), np.zeros((1, 65))
+    # GrabCut memakai k-means (ada unsur acak). Seed dikunci -> gambar yang sama selalu memberi hasil sama.
+    cv2.setRNGSeed(0)
     cv2.grabCut(kecil, m_kecil, None, bgd, fgd, 3, cv2.GC_INIT_WITH_MASK)
     mask = np.where((m_kecil == cv2.GC_FGD) | (m_kecil == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
     mask = cv2.resize(mask, (area.shape[1], area.shape[0]), interpolation=cv2.INTER_NEAREST)
