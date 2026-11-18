@@ -43,7 +43,7 @@ onmessage = async (e) => {
     }
     const data = new Uint8Array(m.data);
     const teks = m.jenis === "tahapan" ? hw.tahapan(data)
-      : hw.analisis(data, m.cadangan || null, m.t ?? null, m.gerak ?? true);
+      : hw.analisis(data, m.cadangan ?? undefined, m.t ?? undefined, m.gerak ?? true);
     postMessage({ jenis: "hasil", id: m.id, hasil: JSON.parse(teks) });
   } catch (err) {
     postMessage({ jenis: "hasil", id: m.id, galat: String(err && err.message || err) });

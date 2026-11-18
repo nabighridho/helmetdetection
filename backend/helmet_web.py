@@ -75,14 +75,21 @@ def _status(st):
     return hasil
 
 
+def _nilai(v):
+    """null/undefined dari JavaScript -> None."""
+    return None if v is None or type(v).__name__ in ("JsNull", "JsUndefined") else v
+
+
 def analisis(data, cadangan=None, t=None, gerak=True):
     """Analisis cepat satu frame kamera.
     cadangan = posisi wajah terakhir [x, y, w, h] atau None; t = waktu (detik); gerak = ada gerakan."""
     img = _baca(data)
+    cadangan, t, gerak = _nilai(cadangan), _nilai(t), _nilai(gerak)
     if hasattr(cadangan, "to_py"):          # array dari JavaScript (Pyodide)
         cadangan = cadangan.to_py()
     cad = tuple(int(v) for v in cadangan) if cadangan else None
     t = float(t) if t is not None else None
+    gerak = True if gerak is None else bool(gerak)
     try:
         h = hg.proses_gambar(img, wajah_cadangan=cad)
     except hg.TidakAdaWajah:
